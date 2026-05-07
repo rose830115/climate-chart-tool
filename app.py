@@ -14,11 +14,6 @@ import streamlit as st
 
 # ── 路徑設定 ──────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
-CLIMATE_SCRIPT = SCRIPT_DIR / "climate_chart.py"
-
-# 動態 import 主腳本的函式
-import sys
-sys.path.insert(0, str(SCRIPT_DIR))
 from climate_chart import geocode, get_climate_data, fill_excel, get_template_path
 
 
@@ -41,7 +36,7 @@ template_key = get_secret("TEMPLATE_FERNET_KEY")
 if template_key:
     os.environ["CLIMATE_TEMPLATE_FERNET_KEY"] = str(template_key).strip()
 
-app_password = get_secret("APP_PASSWORD")
+app_password = str(get_secret("APP_PASSWORD")).strip()
 if app_password and not st.session_state.get("authenticated"):
     with st.form("login_form"):
         password_input = st.text_input("使用密碼", type="password")
