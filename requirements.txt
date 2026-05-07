@@ -1,3 +1,4 @@
 streamlit
 lxml
 pandas
+cryptography

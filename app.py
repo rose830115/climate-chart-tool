@@ -37,6 +37,10 @@ template_b64 = get_secret("TEMPLATE_XLSX_BASE64")
 if template_b64:
     os.environ["CLIMATE_TEMPLATE_XLSX_BASE64"] = str(template_b64).strip()
 
+template_key = get_secret("TEMPLATE_FERNET_KEY")
+if template_key:
+    os.environ["CLIMATE_TEMPLATE_FERNET_KEY"] = str(template_key).strip()
+
 app_password = get_secret("APP_PASSWORD")
 if app_password and not st.session_state.get("authenticated"):
     with st.form("login_form"):

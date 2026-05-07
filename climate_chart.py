@@ -29,6 +29,7 @@ _NAS_TEMPLATE = Path(
     "/[COPY ONLY] 報告號 採樣日 國家 品牌 工廠代號/氣候圖/氣候風險圖表.xlsx"
 )
 _LOCAL_TEMPLATE = Path(__file__).parent / "氣候風險圖表_template.xlsx"
+_ENCRYPTED_TEMPLATE = Path(__file__).parent / "氣候風險圖表_template.xlsx.fernet"
 TEMPLATE_PATH = _NAS_TEMPLATE if _NAS_TEMPLATE.exists() else _LOCAL_TEMPLATE
 _SECRET_TEMPLATE_PATH: Path | None = None
 
@@ -45,6 +46,17 @@ def get_template_path() -> Path:
             tmp_dir = Path(tempfile.mkdtemp(prefix="climate-chart-template-"))
             _SECRET_TEMPLATE_PATH = tmp_dir / "氣候風險圖表_template.xlsx"
             _SECRET_TEMPLATE_PATH.write_bytes(base64.b64decode(template_b64))
+        return _SECRET_TEMPLATE_PATH
+
+    template_key = os.environ.get("CLIMATE_TEMPLATE_FERNET_KEY")
+    if template_key and _ENCRYPTED_TEMPLATE.exists():
+        if _SECRET_TEMPLATE_PATH is None or not _SECRET_TEMPLATE_PATH.exists():
+            from cryptography.fernet import Fernet
+
+            tmp_dir = Path(tempfile.mkdtemp(prefix="climate-chart-template-"))
+            _SECRET_TEMPLATE_PATH = tmp_dir / "氣候風險圖表_template.xlsx"
+            encrypted = _ENCRYPTED_TEMPLATE.read_bytes()
+            _SECRET_TEMPLATE_PATH.write_bytes(Fernet(template_key.encode()).decrypt(encrypted))
         return _SECRET_TEMPLATE_PATH
 
     if _LOCAL_TEMPLATE.exists():
