@@ -110,7 +110,7 @@ if submitted:
     with st.spinner("填入 Excel 模板（Excel 在背景開啟中）…"):
         safe_name = city.replace(",", "").replace(" ", "_")
         tmp_path = Path(tempfile.mkdtemp()) / f"氣候風險圖表_{safe_name}.xlsx"
-        fill_excel(climate, start_year, end_year, tmp_path)
+        fill_excel(climate, start_year, end_year, tmp_path, full_name=full_name)
 
     st.success("圖表產生完成！")
     st.download_button(

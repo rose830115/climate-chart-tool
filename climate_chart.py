@@ -136,7 +136,64 @@ def get_climate_data(lat: float, lon: float) -> dict:
             }
     return result, start_year, end_year
 
-def fill_excel(climate: dict, start_year: int, end_year: int, output_path: Path):
+_MONTH_ABBR = ["Jan.", "Feb.", "Mar.", "Apr.", "May", "Jun.",
+               "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."]
+
+
+def _patch_drawing_xml(xml: str, full_name: str, start_year: int, end_year: int, end_month: int) -> str:
+    """替換 drawing XML 中的城市名、年份、月份佔位符。"""
+    from lxml import etree
+
+    A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    end_month_abbr = _MONTH_ABBR[end_month - 1]
+
+    root = etree.fromstring(xml.encode("utf-8"))
+
+    for p_el in root.iter(f"{{{A}}}p"):
+        t_els = list(p_el.iter(f"{{{A}}}t"))
+        texts = [t.text or "" for t in t_els]
+        joined = "".join(texts)
+
+        # 英文標題段落：「The average climate in #城市名」+ 中間 # + 「 from ... to ...」
+        if "The average climate in" in joined and "月至" not in joined:
+            for t_el in t_els:
+                text = t_el.text or ""
+                if text.startswith("The average climate in #"):
+                    t_el.text = f"The average climate in {full_name}"
+                elif re.match(r"^ from [A-Za-z]+\.? \d{4} to [A-Za-z]+\.? \d{4}\.$", text):
+                    t_el.text = f" from Jan. {start_year} to {end_month_abbr} {end_year}."
+                elif text == "#":
+                    t_el.text = ""
+
+        # 中文年份 + 城市名段落：含「月至」和「平均氣候條件」
+        elif "月至" in texts and "平均氣候條件" in texts:
+            yue_zhi = texts.index("月至")
+
+            # start_year 在「月至」前 3 位（格式：YEAR 年 1 月至）
+            if yue_zhi >= 3 and texts[yue_zhi - 2] == "年":
+                t_els[yue_zhi - 3].text = str(start_year)
+
+            # end_year 在「月至」後 1 位（格式：月至 YEAR 年 MONTH 月）
+            if yue_zhi + 2 < len(texts) and texts[yue_zhi + 2] == "年":
+                t_els[yue_zhi + 1].text = str(end_year)
+
+            # end_month 在「月至」後 3 位（後面跟「月」）
+            if yue_zhi + 4 < len(texts) and texts[yue_zhi + 4] == "月":
+                t_els[yue_zhi + 3].text = str(end_month)
+
+            # 城市名：清空前後 # 佔位符，替換中間的城市名文字
+            hash_indices = [i for i, t in enumerate(texts) if t == "#"]
+            if len(hash_indices) >= 2:
+                t_els[hash_indices[0]].text = ""
+                t_els[hash_indices[1]].text = ""
+                city_idx = hash_indices[0] + 1
+                if city_idx < hash_indices[1]:
+                    t_els[city_idx].text = full_name
+
+    return etree.tostring(root, encoding="unicode")
+
+
+def fill_excel(climate: dict, start_year: int, end_year: int, output_path: Path, full_name: str = ""):
     """
     直接操作 xlsx zip 內的 sheet XML，保留所有圖表檔案。
     不使用 openpyxl（會丟圖表）或 xlwings（需要 Excel 授權）。
@@ -154,7 +211,9 @@ def fill_excel(climate: dict, start_year: int, end_year: int, output_path: Path)
                 data[f"{col}{3 + row_offset}"] = md["temp"]      # 溫度 row 3-7
                 data[f"{col}{12 + row_offset}"] = md["humidity"]  # 濕度 row 12-16
 
-    # 讀模板 zip，只改 sheet1.xml（AVG CAL.），其他全數保留
+    end_month = max(climate.get(end_year, {}).keys(), default=12)
+
+    # 讀模板 zip，改 sheet1.xml 數據 + drawing XMLs 文字佔位符
     template_path = get_template_path()
     with zipfile.ZipFile(template_path, "r") as zin, \
          zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -168,6 +227,8 @@ def fill_excel(climate: dict, start_year: int, end_year: int, output_path: Path)
                 raw = _set_full_calc_on_load(raw.decode("utf-8")).encode("utf-8")
             elif item.filename == "xl/calcChain.xml":
                 continue  # 讓 Excel 重建，避免過期的 calc chain 導致問題
+            elif item.filename in ("xl/drawings/drawing1.xml", "xl/drawings/drawing2.xml") and full_name:
+                raw = _patch_drawing_xml(raw.decode("utf-8"), full_name, start_year, end_year, end_month).encode("utf-8")
 
             zout.writestr(item, raw)
 
@@ -302,7 +363,7 @@ def main():
         output_path = Path(f"/tmp/氣候風險圖表_{safe_name}.xlsx")
 
     print(f"\n📊 填入 Excel 模板 → {output_path}")
-    fill_excel(climate, start_year, end_year, output_path)
+    fill_excel(climate, start_year, end_year, output_path, full_name=full_name)
     print(f"✅ 完成：{output_path}")
 
 if __name__ == "__main__":
