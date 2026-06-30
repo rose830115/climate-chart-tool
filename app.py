@@ -16,13 +16,16 @@ import streamlit as st
 # ── 路徑設定 ──────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEMO_PASSWORD_SHA256 = "30c02e9a58710296111c685ed1ceadf48e28b0240190c8338e2f39a35dcf4de4"
-from climate_chart import geocode, get_climate_data, fill_excel, get_template_path
+from climate_chart import (
+    geocode, get_climate_data, fill_excel, get_template_path,
+    monthly_rainfall, classify_seasons,
+)
 
 
 # ── UI ────────────────────────────────────────────────────
 st.set_page_config(page_title="氣候風險圖表產生器", layout="centered")
 st.title("🌡️ 氣候風險圖表產生器")
-st.caption("輸入工廠所在城市，自動抓取近 5 年月均溫與月均濕度，填入 Excel 並產生圖表。")
+st.caption("輸入工廠所在城市，自動抓取近 4 年月均溫、月均濕度與雨量，判定乾濕季並填入 Excel 產生圖表。")
 
 def get_secret(name: str, default: str = "") -> str:
     try:
@@ -31,7 +34,10 @@ def get_secret(name: str, default: str = "") -> str:
         return default
 
 def password_matches(password_input: str, app_password: str) -> bool:
-    if app_password and hmac.compare_digest(password_input, app_password):
+    # 用 bytes 比對：hmac.compare_digest 的字串版不接受非 ASCII 字元（會 TypeError）
+    if app_password and hmac.compare_digest(
+        password_input.encode("utf-8"), app_password.encode("utf-8")
+    ):
         return True
 
     password_hash = hashlib.sha256(password_input.encode("utf-8")).hexdigest()
@@ -91,26 +97,43 @@ if submitted:
 
     st.info(f"**{full_name}**（{lat:.4f}, {lon:.4f}）")
 
-    with st.spinner("從 Open-Meteo 抓取 5 年氣候資料…"):
+    with st.spinner("從 Open-Meteo 抓取近年氣候與雨量資料…"):
         climate, start_year, end_year = get_climate_data(lat, lon)
+        rain = monthly_rainfall(climate, start_year, end_year)
+        seasons = classify_seasons(rain)
 
-    # 顯示資料預覽
-    with st.expander("資料預覽", expanded=False):
-        import pandas as pd
-        months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-        temp_rows, humid_rows = [], []
+    # 乾濕季判定（醒目顯示）
+    pat = "乾-濕-乾 (Dry-Wet-Dry)" if seasons["pattern"] == "DWD" else "濕-乾-濕 (Wet-Dry-Wet)"
+    wm = seasons["wet_months"]
+    wet_txt = f"{wm[0]}–{wm[-1]} 月" if wm else "無明顯濕季"
+    st.success(f"**乾濕季判定：{pat}**　|　濕季 {wet_txt}　|　門檻 {seasons['threshold']:.0f} mm（全年月均）")
+    st.caption("乾濕季依雨量自動推算（濕月＝月雨量 ≥ 全年月均）。如與當地實況不符，下載後可直接在圖表上微調色塊與圖例。")
+
+    # 資料預覽（溫度 / 濕度 / 雨量）— 讓同仁核對原始數據
+    import pandas as pd
+    months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    with st.expander("資料預覽（近年每月數據）", expanded=True):
+        temp_rows, humid_rows, rain_rows = [], [], []
         for y in range(start_year, end_year + 1):
             temp_rows.append({"年份": y, **{m: climate.get(y, {}).get(i+1, {}).get("temp") for i, m in enumerate(months)}})
             humid_rows.append({"年份": y, **{m: climate.get(y, {}).get(i+1, {}).get("humidity") for i, m in enumerate(months)}})
+            rain_rows.append({"年份": y, **{m: climate.get(y, {}).get(i+1, {}).get("precip") for i, m in enumerate(months)}})
+        wet_set = set(seasons["wet_months"])
         st.markdown("**月均溫 (°C)**")
         st.dataframe(pd.DataFrame(temp_rows).set_index("年份"), use_container_width=True)
         st.markdown("**月均濕度 (%)**")
         st.dataframe(pd.DataFrame(humid_rows).set_index("年份"), use_container_width=True)
+        st.markdown("**月雨量 (mm)** — 乾濕季判定依據")
+        df_rain = pd.DataFrame(rain_rows).set_index("年份")
+        df_rain.loc["平均 AVG"] = [rain[i + 1] for i in range(12)]
+        df_rain.loc["乾濕季"] = ["濕" if (i + 1) in wet_set else "乾" for i in range(12)]
+        st.dataframe(df_rain, use_container_width=True)
 
-    with st.spinner("填入 Excel 模板（Excel 在背景開啟中）…"):
+    with st.spinner("填入 Excel 模板…"):
         safe_name = city.replace(",", "").replace(" ", "_")
         tmp_path = Path(tempfile.mkdtemp()) / f"氣候風險圖表_{safe_name}.xlsx"
-        fill_excel(climate, start_year, end_year, tmp_path, full_name=full_name)
+        fill_excel(climate, start_year, end_year, tmp_path,
+                   full_name=full_name, seasons=seasons, rain=rain)
 
     st.success("圖表產生完成！")
     st.download_button(
