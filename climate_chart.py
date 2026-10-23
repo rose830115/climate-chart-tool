@@ -651,6 +651,7 @@ def fill_excel(climate: dict, start_year: int, end_year: int, output_path: Path,
 
             if name == "xl/worksheets/sheet1.xml":
                 xml = _patch_sheet_xml(raw.decode("utf-8"), data)
+                xml = _force_avg_formulas(xml)
                 if rain is not None and seasons is not None:
                     xml = _write_rainfall_block(xml, climate, start_year, end_year, rain, seasons)
                 raw = xml.encode("utf-8")
@@ -754,13 +755,59 @@ def _patch_sheet_xml(sheet_xml: str, data: dict[str, float]) -> str:
     return etree.tostring(root, encoding="unicode")
 
 
+def _force_avg_formulas(sheet_xml: str) -> str:
+    """強制 row 8（溫度平均）與 row 17（濕度平均）的 B–M 公式為正確的 5 列範圍。
+
+    模板曾出現平均範圍漏一列（E–M 只算 4 年）、且 row 17 有互相重疊的 shared formula。
+    這裡一律改寫成逐格獨立公式（不用 shared），就算模板（如 NAS 那份）被改壞，輸出仍正確。
+    """
+    from lxml import etree
+
+    NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    root = etree.fromstring(sheet_xml.encode("utf-8"))
+    sheet_data = root.find(f"{{{NS}}}sheetData")
+    rows_by_num = {int(r.get("r")): r for r in sheet_data.findall(f"{{{NS}}}row")}
+
+    for row_num, (first, last) in {8: (3, 7), 17: (12, 16)}.items():
+        row_el = rows_by_num.get(row_num)
+        if row_el is None:
+            continue
+        existing = {c.get("r"): c for c in row_el.findall(f"{{{NS}}}c")}
+        for col in "BCDEFGHIJKLM":
+            ref = f"{col}{row_num}"
+            cell_el = existing.get(ref)
+            if cell_el is None:
+                cell_el = etree.SubElement(row_el, f"{{{NS}}}c")
+                cell_el.set("r", ref)
+            # 清掉舊公式（含 shared）與過期的快取值／錯誤型別，交給 Excel 開檔重算
+            for tag in ("f", "v"):
+                old = cell_el.find(f"{{{NS}}}{tag}")
+                if old is not None:
+                    cell_el.remove(old)
+            if "t" in cell_el.attrib:
+                del cell_el.attrib["t"]
+            f_el = etree.SubElement(cell_el, f"{{{NS}}}f")
+            f_el.text = f"AVERAGE({col}{first}:{col}{last})"
+
+        # 欄位順序需符合 xlsx 規範
+        cells = row_el.findall(f"{{{NS}}}c")
+        cells.sort(key=lambda c: _col_to_num(re.match(r"([A-Z]+)", c.get("r")).group(1)))
+        for c in cells:
+            row_el.remove(c)
+        for c in cells:
+            row_el.append(c)
+
+    return etree.tostring(root, encoding="unicode")
+
+
 def _set_full_calc_on_load(workbook_xml: str) -> str:
     """在 workbook.xml 的 calcPr 加上 fullCalcOnLoad='1'，讓 Excel 開檔時完整重算。"""
     if "fullCalcOnLoad" in workbook_xml:
         return workbook_xml
-    return workbook_xml.replace(
-        "<calcPr", '<calcPr fullCalcOnLoad="1"', 1
-    )
+    if "<calcPr" in workbook_xml:
+        return workbook_xml.replace("<calcPr", '<calcPr fullCalcOnLoad="1"', 1)
+    # 模板沒有 calcPr：補一個（schema 要求在 </sheets>/definedNames 之後、extLst 之前）
+    return workbook_xml.replace("</workbook>", '<calcPr fullCalcOnLoad="1"/></workbook>', 1)
 
 
 def _clear_mask_fill(styles_xml: str) -> str:
